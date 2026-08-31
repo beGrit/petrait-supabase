@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - 'supabase/functions/**'
+      - 'supabase/migrations/**'
   workflow_dispatch:
     inputs:
       environment:
@@ -19,6 +20,32 @@ on:
         required: true
 
 jobs:
+  deploy-migrations:
+    name: Deploy Database Migrations
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment || 'development' }}
+    if: github.event_name == 'push' && contains(github.event.head_commit.modified, 'supabase/migrations/') || github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Run database migrations
+        env:
+          SUPABASE_DB_URL: postgresql://postgres.${{ secrets.SUPABASE_DB_TENANT_ID }}:${{ secrets.SUPABASE_DB_PASSWORD }}@${{ secrets.SUPABASE_SERVER_HOST }}:5432/postgres?sslmode=disable
+        run: |
+          echo "Running database migrations..."
+          
+          # Push migrations to the database
+          supabase db push --db-url "$SUPABASE_DB_URL"
+          
+          # Optionally show migration status
+          supabase migration list --db-url "$SUPABASE_DB_URL"
+
   deploy-functions:
     name: Deploy Edge Functions
     runs-on: ubuntu-latest
@@ -58,17 +85,18 @@ jobs:
   notify:
     name: Deployment Summary
     runs-on: ubuntu-latest
-    needs: [deploy-functions]
+    needs: [deploy-migrations, deploy-functions]
     if: always()
     steps:
       - name: Print deployment status
         run: |
           echo "Deployment completed!"
+          echo "Migrations deployment: ${{ needs.deploy-migrations.result }}"
           echo "Functions deployment: ${{ needs.deploy-functions.result }}"
           
-          if [[ "${{ needs.deploy-functions.result }}" == "failure" ]]; then
-            echo "⚠️ Functions deployment failed. Check the logs above."
+          if [[ "${{ needs.deploy-migrations.result }}" == "failure" ]] || [[ "${{ needs.deploy-functions.result }}" == "failure" ]]; then
+            echo "⚠️ Deployment failed. Check the logs above."
             exit 1
           else
-            echo "✅ Functions deployment successful!"
+            echo "✅ Deployment successful!"
           fi

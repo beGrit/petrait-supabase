@@ -11,6 +11,24 @@ interface JobPayload {
   jobId: string;
 }
 
+const MIME_EXTENSIONS: Record<string, string> = {
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/jpg": "jpg",
+  "image/webp": "webp",
+  "image/svg+xml": "svg",
+};
+
+async function fetchImageBytes(url: string): Promise<{ bytes: Uint8Array; mimeType: string }> {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`Failed to download generated image: ${response.status} ${response.statusText}`);
+  }
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  const mimeType = response.headers.get("content-type")?.split(";")[0]?.trim() || "image/png";
+  return { bytes, mimeType };
+}
+
 async function processJob(jobId: string, provider: ImageGenerationProvider): Promise<void> {
   const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
   const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -44,12 +62,16 @@ async function processJob(jobId: string, provider: ImageGenerationProvider): Pro
     // Call the image generation provider
     const result = await provider.generateImage(job.prompt, job.input_storage_path);
 
+    // Download generated image from the returned URL (http(s) or data:)
+    const { bytes, mimeType } = await fetchImageBytes(result.url);
+    const ext = MIME_EXTENSIONS[mimeType] || MIME_EXTENSIONS[result.mimeType] || "png";
+
     // Upload result to output bucket
-    const outputPath = `${job.user_id}/${jobId}.png`;
+    const outputPath = `${job.user_id}/${jobId}.${ext}`;
     const { error: uploadError } = await supabase.storage
       .from("image-gen-output")
-      .upload(outputPath, result.imageData, {
-        contentType: "image/png",
+      .upload(outputPath, bytes, {
+        contentType: mimeType,
         upsert: true,
       });
 
